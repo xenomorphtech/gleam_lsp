@@ -114,6 +114,11 @@ where
         // event of an error because we _always_ want to do the restoration of
         // state afterwards.
         let result = self.project_compiler.compile_root_package();
+        // parse all the files, don't stop at any error
+        // build the dep tree
+        // compile all the leafs, then nodes that don't have leafs uncompiled
+        // for each file where parsing didn't fail: collect all the exported symbols
+        
 
         // Return any error
         let package = result?;
@@ -140,6 +145,92 @@ where
     pub fn get_module_inferface(&self, name: &str) -> Option<&ModuleInterface> {
         self.project_compiler.get_importable_modules().get(name)
     }
+
+    fn compile_gleam_package(
+        &mut self,
+        config: &PackageConfig,
+        is_root: bool,
+        root_path: Utf8PathBuf,
+    ) -> Result<Vec<Module>, Error> {
+        let out_path =
+            self.paths
+                .build_directory_for_package(self.mode(), self.target(), &config.name);
+        let lib_path = self
+            .paths
+            .build_directory_for_target(self.mode(), self.target());
+        let mode = if is_root { self.mode() } else { Mode::Prod };
+        let target = match self.target() {
+            Target::Erlang => {
+                let package_name_overrides = self
+                    .packages
+                    .values()
+                    .flat_map(|p| {
+                        let overriden = p.otp_app.as_ref()?;
+                        Some((p.name.clone(), overriden.clone()))
+                    })
+                    .collect();
+                super::TargetCodegenConfiguration::Erlang {
+                    app_file: Some(ErlangAppCodegenConfiguration {
+                        include_dev_deps: is_root,
+                        package_name_overrides,
+                    }),
+                }
+            }
+
+            Target::JavaScript => super::TargetCodegenConfiguration::JavaScript {
+                emit_typescript_definitions: self.config.javascript.typescript_declarations,
+                // This path is relative to each package output directory
+                prelude_location: Utf8PathBuf::from("../prelude.mjs"),
+            },
+        };
+
+        let mut compiler = PackageCompiler::new(
+            config,
+            mode,
+            &root_path,
+            &out_path,
+            &lib_path,
+            &target,
+            self.ids.clone(),
+            self.io.clone(),
+        );
+        compiler.write_metadata = true;
+        compiler.write_entrypoint = is_root;
+        compiler.perform_codegen = self.options.codegen.should_codegen(is_root);
+        compiler.compile_beam_bytecode = self.options.codegen.should_codegen(is_root);
+        compiler.subprocess_stdio = self.subprocess_stdio;
+        compiler.target_support = if is_root {
+            // When compiling the root package it is context specific as to whether we need to
+            // enforce that all functions have an implementation for the current target.
+            // Typically we do, but if we are using `gleam run -m $module` to run a module that
+            // belongs to a dependency we don't need to enforce this as we don't want to fail
+            // compilation. It's impossible for a dependecy module to call functions from the root
+            // package, so it's OK if they could not be compiled.
+            self.options.root_target_support
+        } else {
+            // When compiling dependencies we don't enforce that all functions have an
+            // implementation for the current target. It is OK if they have APIs that are
+            // unaccessible so long as they are not used by the root package.
+            TargetSupport::NotEnforced
+        };
+
+        // Compile project to Erlang or JavaScript source code
+
+        // package compiler exits early on any parse error
+        //let compiled = compiler.compile(
+        //    &mut self.warnings,
+        //    &mut self.importable_modules,
+        //    &mut self.defined_modules,
+        //    &mut self.stale_modules,
+        //    self.telemetry.as_ref(),
+        //)?;
+
+        //Ok(compiled)
+    }
+   
+    // there should be a immutable collection of dependency immutable modules
+    // &mut self.importable_modules,
+
 }
 
 impl<IO> LspProjectCompiler<IO> {
